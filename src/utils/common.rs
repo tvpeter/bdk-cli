@@ -5,7 +5,7 @@ use bdk_kyoto::{Info, Receiver, UnboundedReceiver, Warning};
 use bdk_message_signer::SignatureFormat;
 #[cfg(feature = "silent-payments")]
 use bdk_sp::encoding::SilentPaymentCode;
-use bdk_wallet::bitcoin::{Address, Network, OutPoint, ScriptBuf};
+use bdk_wallet::bitcoin::{Address, FeeRate, Network, OutPoint, ScriptBuf, script::PushBytesBuf};
 #[cfg(any(
     feature = "electrum",
     feature = "esplora",
@@ -19,6 +19,26 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
 };
+
+/// Maximum `OP_RETURN` `scriptPubKey` size a default Bitcoin Core node relays.
+///
+/// `-datacarriersize` limits the whole `scriptPubKey`, not just the payload. Core
+/// v30 raised its default to 100000, from the 83 that allowed an 80 byte payload.
+const MAX_OP_RETURN_SCRIPT_BYTES: usize = 100_000;
+
+/// What the script spends on `OP_RETURN` plus the push prefix: any payload large
+/// enough to reach the limit is over 65535 bytes, so it always uses
+/// `OP_PUSHDATA4` and always costs 1 + 1 + 4 bytes.
+const OP_RETURN_OVERHEAD_BYTES: usize = 6;
+
+/// Maximum number of data bytes such an output may carry.
+const MAX_OP_RETURN_BYTES: usize = MAX_OP_RETURN_SCRIPT_BYTES - OP_RETURN_OVERHEAD_BYTES;
+
+/// 1 vB is 1/4 kwu, so 1 sat/vB is 250 sat/kwu.
+const SAT_PER_KWU_PER_SAT_PER_VB: f64 = 250.0;
+
+/// Smallest fee rate `FeeRate` can represent, in sat/vB.
+const MIN_SAT_PER_VB: f64 = 1.0 / SAT_PER_KWU_PER_SAT_PER_VB;
 
 /// Determine if PSBT has final script sigs or witnesses for all unsigned tx inputs.
 #[cfg(any(
@@ -78,7 +98,7 @@ pub(crate) fn parse_proxy_auth(s: &str) -> Result<(String, String), Error> {
     Ok((user, passwd))
 }
 
-/// Parse a outpoint (Txid:Vout) argument from cli input.
+/// Parse a outpoint (Txid:Vout) argument from input.
 pub(crate) fn parse_outpoint(s: &str) -> Result<OutPoint, Error> {
     Ok(OutPoint::from_str(s)?)
 }
@@ -87,6 +107,49 @@ pub(crate) fn parse_outpoint(s: &str) -> Result<OutPoint, Error> {
 pub(crate) fn parse_address(address_str: &str) -> Result<Address, Error> {
     let unchecked_address = Address::from_str(address_str)?;
     Ok(unchecked_address.assume_checked())
+}
+
+/// Parse a fee rate, given in sat/vB, from input.
+///
+/// [`FeeRate`] counts sat/kwu, so fractional rates are kept at 1/250 sat/vB
+/// precision rather than being truncated to a whole sat/vB. A rate that cannot be
+/// represented is rejected instead of silently becoming zero or a default.
+pub(crate) fn parse_fee_rate(s: &str) -> Result<FeeRate, Error> {
+    let sat_vb = f64::from_str(s.trim())
+        .map_err(|_| Error::Generic(format!("Invalid fee rate '{s}', expected a number in sat/vB")))?;
+
+    if !sat_vb.is_finite() {
+        return Err(Error::Generic(format!(
+            "Invalid fee rate '{s}', must be a finite number of sat/vB"
+        )));
+    }
+    if sat_vb < MIN_SAT_PER_VB {
+        return Err(Error::Generic(format!(
+            "Fee rate '{s}' sat/vB is below the smallest usable rate of {MIN_SAT_PER_VB} sat/vB"
+        )));
+    }
+
+    let sat_kwu = (sat_vb * SAT_PER_KWU_PER_SAT_PER_VB).round();
+    if sat_kwu >= u64::MAX as f64 {
+        return Err(Error::Generic(format!(
+            "Fee rate '{s}' sat/vB is too large to represent"
+        )));
+    }
+
+    Ok(FeeRate::from_sat_per_kwu(sat_kwu as u64))
+}
+
+/// Build the `OP_RETURN` payload for the `--add_data`/`--add_string` arguments,
+/// enforcing the 80 byte limit both of them document.
+pub(crate) fn parse_op_return_data(data: Vec<u8>) -> Result<PushBytesBuf, Error> {
+    if data.len() > MAX_OP_RETURN_BYTES {
+        return Err(Error::Generic(format!(
+            "OP_RETURN data is {} bytes, the maximum is {MAX_OP_RETURN_BYTES}",
+            data.len()
+        )));
+    }
+
+    PushBytesBuf::try_from(data).map_err(|e| Error::Generic(e.to_string()))
 }
 
 /// Prepare bdk-cli home directory
@@ -315,3 +378,42 @@ pub(crate) fn parse_dns_recipient(s: &str) -> Result<(String, u64), String> {
     let sending_amount = u64::from_str(parts[1]).map_err(|e| e.to_string())?;
     Ok((parts[0].to_string(), sending_amount))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_whole_and_fractional_fee_rates() {
+        let one_sat_vb = FeeRate::from_sat_per_vb(1).unwrap();
+        assert_eq!(parse_fee_rate("1").unwrap(), one_sat_vb);
+        assert_eq!(parse_fee_rate("1.0").unwrap(), one_sat_vb);
+        assert_eq!(parse_fee_rate(" 1 ").unwrap(), one_sat_vb);
+        assert_eq!(parse_fee_rate("2.7").unwrap(), FeeRate::from_sat_per_kwu(675));
+        assert_eq!(parse_fee_rate("0.004").unwrap(), FeeRate::from_sat_per_kwu(1));
+    }
+
+    #[test]
+    fn rejects_fee_rates_that_cannot_be_honoured() {
+        for input in ["0.9", "0", "-5", "NaN", "inf", "1e30", "abc", ""] {
+            assert!(parse_fee_rate(input).is_err(), "fee rate '{input}' should be rejected");
+        }
+    }
+
+    #[test]
+    fn op_return_data_is_capped_at_the_documented_limit() {
+        assert!(parse_op_return_data(vec![0u8; MAX_OP_RETURN_BYTES]).is_ok());
+        assert!(parse_op_return_data(vec![0u8; MAX_OP_RETURN_BYTES + 1]).is_err());
+    }
+
+#[test]
+fn the_largest_allowed_payload_fits_the_script_limit() {
+    let data = vec![0u8; MAX_OP_RETURN_BYTES];
+    let push_bytes = parse_op_return_data(data).unwrap();
+    assert_eq!(
+        ScriptBuf::new_op_return(&push_bytes).len(),
+        MAX_OP_RETURN_SCRIPT_BYTES
+    );
+}
+}
+
