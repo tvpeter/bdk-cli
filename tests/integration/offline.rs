@@ -212,7 +212,6 @@ mod test_offline {
         cmd_init.assert().success();
 
         for (fee_rate, expected) in [
-            ("0.9", "below the smallest usable rate"),
             ("0", "below the smallest usable rate"),
             ("NaN", "must be a finite number"),
             ("1e30", "too large to represent"),

@@ -6,6 +6,9 @@ page. See [DEVELOPMENT_CYCLE.md](DEVELOPMENT_CYCLE.md) for more details.
 ## [Unreleased]
 
 - Added support for Multipath (two-paths) descriptors.
+- Fixed `create_tx` and `bump_fee` panicking on malformed `--utxos` and `--add_data` values instead of returning an error
+- Fixed `--fee_rate` silently truncating to a whole sat/vB, falling back to a default, or producing a zero-fee transaction, unusable values are now rejected
+- Enforced a size limit on `--add_data` and `--add_string` OP_RETURN payloads, matching Bitcoin Core v30's default `-datacarriersize` of 100000 bytes
 
 
 ## [4.0.0]
