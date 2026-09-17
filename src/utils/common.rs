@@ -115,8 +115,11 @@ pub(crate) fn parse_address(address_str: &str) -> Result<Address, Error> {
 /// precision rather than being truncated to a whole sat/vB. A rate that cannot be
 /// represented is rejected instead of silently becoming zero or a default.
 pub(crate) fn parse_fee_rate(s: &str) -> Result<FeeRate, Error> {
-    let sat_vb = f64::from_str(s.trim())
-        .map_err(|_| Error::Generic(format!("Invalid fee rate '{s}', expected a number in sat/vB")))?;
+    let sat_vb = f64::from_str(s.trim()).map_err(|_| {
+        Error::Generic(format!(
+            "Invalid fee rate '{s}', expected a number in sat/vB"
+        ))
+    })?;
 
     if !sat_vb.is_finite() {
         return Err(Error::Generic(format!(
@@ -389,14 +392,27 @@ mod tests {
         assert_eq!(parse_fee_rate("1").unwrap(), one_sat_vb);
         assert_eq!(parse_fee_rate("1.0").unwrap(), one_sat_vb);
         assert_eq!(parse_fee_rate(" 1 ").unwrap(), one_sat_vb);
-        assert_eq!(parse_fee_rate("2.7").unwrap(), FeeRate::from_sat_per_kwu(675));
-        assert_eq!(parse_fee_rate("0.004").unwrap(), FeeRate::from_sat_per_kwu(1));
+        assert_eq!(
+            parse_fee_rate("2.7").unwrap(),
+            FeeRate::from_sat_per_kwu(675)
+        );
+        assert_eq!(
+            parse_fee_rate("0.004").unwrap(),
+            FeeRate::from_sat_per_kwu(1)
+        );
+        assert_eq!(
+            parse_fee_rate("0.9").unwrap(),
+            FeeRate::from_sat_per_kwu(225)
+        );
     }
 
     #[test]
     fn rejects_fee_rates_that_cannot_be_honoured() {
-        for input in ["0.9", "0", "-5", "NaN", "inf", "1e30", "abc", ""] {
-            assert!(parse_fee_rate(input).is_err(), "fee rate '{input}' should be rejected");
+        for input in ["0", "-5", "NaN", "inf", "1e30", "abc", ""] {
+            assert!(
+                parse_fee_rate(input).is_err(),
+                "fee rate '{input}' should be rejected"
+            );
         }
     }
 
@@ -406,14 +422,13 @@ mod tests {
         assert!(parse_op_return_data(vec![0u8; MAX_OP_RETURN_BYTES + 1]).is_err());
     }
 
-#[test]
-fn the_largest_allowed_payload_fits_the_script_limit() {
-    let data = vec![0u8; MAX_OP_RETURN_BYTES];
-    let push_bytes = parse_op_return_data(data).unwrap();
-    assert_eq!(
-        ScriptBuf::new_op_return(&push_bytes).len(),
-        MAX_OP_RETURN_SCRIPT_BYTES
-    );
+    #[test]
+    fn the_largest_allowed_payload_fits_the_script_limit() {
+        let data = vec![0u8; MAX_OP_RETURN_BYTES];
+        let push_bytes = parse_op_return_data(data).unwrap();
+        assert_eq!(
+            ScriptBuf::new_op_return(&push_bytes).len(),
+            MAX_OP_RETURN_SCRIPT_BYTES
+        );
+    }
 }
-}
-
