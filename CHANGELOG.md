@@ -6,6 +6,8 @@ page. See [DEVELOPMENT_CYCLE.md](DEVELOPMENT_CYCLE.md) for more details.
 ## [Unreleased]
 
 - Added support for Multipath (two-paths) descriptors.
+- Fixed routing electrum and esplora traffic through configured socks5 proxy
+- Rejected `--proxy` on the `rpc` and `cbf` backends
 
 
 ## [4.0.0]
